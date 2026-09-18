@@ -59,6 +59,7 @@
 !/obs-studio/
 !/nslogger/
 !/kdenlive/
+!/davinci-resolve/
 !/shotcut/
 !/anygen/
 !/zoom/
@@ -128,6 +129,8 @@
 /nslogger/.*
 /kdenlive/*
 /kdenlive/.*
+/davinci-resolve/*
+/davinci-resolve/.*
 /shotcut/*
 /shotcut/.*
 /anygen/*
@@ -238,6 +241,7 @@
 !/obs-studio/agent-harness/
 !/nslogger/agent-harness/
 !/kdenlive/agent-harness/
+!/davinci-resolve/agent-harness/
 !/shotcut/agent-harness/
 !/anygen/agent-harness/
 !/zoom/agent-harness/

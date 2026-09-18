@@ -367,6 +367,25 @@
       ]
     },
     {
+      "name": "davinci-resolve",
+      "display_name": "DaVinci Resolve Studio",
+      "version": "1.0.0",
+      "description": "Local desktop-session project, media, timeline, caption, render queue, and native preview control through Resolve's installed scripting bridge",
+      "requires": "DaVinci Resolve Studio running with External scripting enabled",
+      "homepage": "https://www.blackmagicdesign.com/products/davinciresolve",
+      "source_url": null,
+      "install_cmd": "pip install git+https://github.com/HKUDS/CLI-Anything.git#subdirectory=davinci-resolve/agent-harness",
+      "entry_point": "cli-anything-davinci-resolve",
+      "skill_md": "skills/cli-anything-davinci-resolve/SKILL.md",
+      "category": "video",
+      "contributors": [
+        {
+          "name": "Matty-1337",
+          "url": "https://github.com/Matty-1337"
+        }
+      ]
+    },
+    {
       "name": "kdenlive",
       "display_name": "Kdenlive",
       "version": "1.0.0",
