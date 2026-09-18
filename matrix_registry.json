@@ -26,6 +26,7 @@
         "minimax-cli",
         "elevenlabs",
         "suno",
+        "davinci-resolve",
         "kdenlive",
         "shotcut",
         "videocaptioner",
@@ -225,6 +226,7 @@
           "outputs": ["video:path"],
           "skill_search_hints": ["video editing", "timeline", "NLE", "story arc", "beat map", "audio plan", "hyperframes", "website to video", "product launch video", "digital launch video"],
           "providers": [
+            {"kind": "harness-cli", "name": "cli-anything-davinci-resolve", "requires": {"binary": ["cli-anything-davinci-resolve"], "application": ["DaVinci Resolve Studio"]}, "cost_tier": "licensed", "quality_tier": "high", "offline": true, "notes": "Controls the real local Resolve Studio desktop session through its bundled scripting bridge. Use for native project, media-pool, timeline, title, caption, render-queue, and current-frame preview operations; no cloud API key is required."},
             {"kind": "harness-cli", "name": "cli-anything-kdenlive", "requires": {"binary": ["cli-anything-kdenlive"]}, "cost_tier": "free", "quality_tier": "high", "offline": true, "notes": "Use the provider-boundary pattern in cli-hub-matrix/video-creation/references/nle-shotcut-kdenlive.md: ffmpeg for mezzanine prep, the NLE harness for project/timeline/tracks/transitions/render, then ffmpeg for post-NLE captions, normalization, muxing, and doctor evidence."},
             {"kind": "harness-cli", "name": "cli-anything-shotcut", "requires": {"binary": ["cli-anything-shotcut"]}, "cost_tier": "free", "quality_tier": "high", "offline": true, "notes": "Use the provider-boundary pattern in cli-hub-matrix/video-creation/references/nle-shotcut-kdenlive.md: ffmpeg for mezzanine prep, the NLE harness for project/timeline/tracks/transitions/render, then ffmpeg for post-NLE captions, normalization, muxing, and doctor evidence."},
             {"kind": "python", "name": "moviepy", "requires": {"package": ["moviepy"], "binary": ["ffmpeg"]}, "cost_tier": "free", "quality_tier": "good", "offline": true},
