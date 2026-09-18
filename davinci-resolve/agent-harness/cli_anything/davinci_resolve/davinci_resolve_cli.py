@@ -101,7 +101,14 @@ def doctor(ctx: click.Context):
         connected = True
         app = backend.application_info(resolve)
         current = backend.current_project(resolve, required=False)
-        project = backend.project_summary(current) if current else None
+        if current:
+            active = current.GetCurrentTimeline()
+            project = {
+                "name": current.GetName(),
+                "id": current.GetUniqueId(),
+                "timeline_count": current.GetTimelineCount(),
+                "current_timeline": active.GetName() if active else None,
+            }
     except backend.ResolveConnectionError as exc:
         error = str(exc)
     healthy = all(paths[key] for key in ("resolve_exe_exists", "script_api_exists", "script_module_exists", "script_lib_exists")) and connected
