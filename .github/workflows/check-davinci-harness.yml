@@ -1,0 +1,33 @@
+name: Check DaVinci Resolve harness
+
+on:
+  pull_request:
+    paths:
+      - "davinci-resolve/agent-harness/**"
+      - "skills/cli-anything-davinci-resolve/**"
+      - "registry.json"
+      - "matrix_registry.json"
+      - ".github/workflows/check-davinci-harness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install harness
+        run: python -m pip install -e "davinci-resolve/agent-harness[dev]"
+      - name: Validate registries
+        run: python -c "import json; json.load(open('registry.json')); json.load(open('matrix_registry.json'))"
+      - name: Validate root skills
+        run: python .github/scripts/validate_root_skills.py
+      - name: Run unit tests
+        run: python -m pytest davinci-resolve/agent-harness/cli_anything/davinci_resolve/tests/test_core.py -v
+      - name: Verify installed CLI
+        run: cli-anything-davinci-resolve --help
