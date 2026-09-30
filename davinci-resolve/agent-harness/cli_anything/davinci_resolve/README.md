@@ -56,7 +56,7 @@ davinci --json media list
 davinci --dry-run --json media import C:\media\hook.mp4 C:\media\voice.wav
 davinci --dry-run --json timeline create "Master 16x9" --clip hook.mp4
 davinci --dry-run --json timeline append --clip voice.wav
-davinci --dry-run --json timeline title "Text+" --fusion
+davinci --dry-run --json timeline title "Text+" --fusion   # ripple insert on V1; see Fusion titles
 davinci --dry-run --json timeline captions --language english
 davinci --json timeline export C:\exports\master.otio --format otio
 
@@ -67,8 +67,45 @@ davinci --dry-run --json render start
 davinci --json render status
 ```
 
-The v1 harness deliberately has no destructive project, media, timeline, or
-render-job deletion commands.
+The harness deliberately has no destructive project, media, timeline, or
+render-job deletion commands. The one deletion it performs is internal: `fusion
+export-template` removes its own throwaway timeline, and `fusion place` removes
+the carrier it just added if the comp fails to load.
+
+## Fusion titles
+
+Proved on Resolve Studio 21.1:
+
+- `Timeline.InsertFusionTitleIntoTimeline` always drops the title into V1 at the
+  playhead as a **ripple insert**: everything after it moves later by the title
+  length. `timeline title` says so in its output. It is not safe on a cut timeline.
+- `fusion place` puts a title on an exact track, frame and length without moving
+  anything. It appends a transparent carrier clip (QuickTime Animation, made once
+  with ffmpeg and cached under `%LOCALAPPDATA%\cli-anything-davinci-resolve\carriers`)
+  with `trackIndex`, `recordFrame` and `endFrame`, loads the title comp onto it with
+  `ImportFusionComp`, and sets `COMPN_GlobalEnd` to the clip length so a template's
+  out animation lands on the clip end instead of at the end of the carrier file.
+- Text is set on named inner Text+ tools. Published macro inputs read back `0.0`
+  and ignore scripts, so templates meant for automation give every text field its
+  own named Text+ tool.
+- `fusion export-template` gets a template's comp by inserting it on a throwaway
+  timeline (`_cli_fusion_scratch`), exporting it and deleting that timeline. The
+  working timeline is never inserted into.
+
+```bash
+davinci --json fusion carrier --seconds 60
+davinci --json fusion export-template "Draw On 2 Lines Lower Third" C:\titles\lower.comp
+davinci --dry-run --json fusion place C:\titles\lower.comp --track 3 --at 01:00:20:00 --seconds 7 --text "mainText=Matty Herrera"
+davinci --json fusion place C:\titles\lower.comp --track 3 --at 01:00:20:00 --seconds 7 --text "mainText=Matty Herrera"
+davinci --json fusion tools V3@01:00:21:00
+davinci --json fusion inputs V3@01:00:21:00 mainText
+davinci --json fusion set V3@01:00:21:00 --text "mainText=New name" --set "mainText.Size=0.06"
+davinci --json fusion export V3@01:00:21:00 C:\titles\edited.comp
+```
+
+`ITEM_REF` is a timeline item's unique id or `V<track>@<frame|timecode>` for the
+item covering that frame. `place` refuses V1 (`--allow-v1`) and ranges that
+already hold an item (`--allow-overlap`).
 
 ## Preview bundles
 

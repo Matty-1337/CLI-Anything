@@ -28,6 +28,6 @@ jobs:
       - name: Validate root skills
         run: python .github/scripts/validate_root_skills.py
       - name: Run unit tests
-        run: python -m pytest davinci-resolve/agent-harness/cli_anything/davinci_resolve/tests/test_core.py -v
+        run: python -m pytest davinci-resolve/agent-harness/cli_anything/davinci_resolve/tests/test_core.py davinci-resolve/agent-harness/cli_anything/davinci_resolve/tests/test_fusion.py -v
       - name: Verify installed CLI
         run: cli-anything-davinci-resolve --help

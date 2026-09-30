@@ -20,7 +20,7 @@ def test_locked_config_roundtrip(tmp_path):
 def test_cli_help_lists_production_groups():
     result = CliRunner().invoke(cli, ["--help"])
     assert result.exit_code == 0
-    for command in ("auth", "configure", "doctor", "media", "preview", "project", "render", "timeline"):
+    for command in ("auth", "configure", "doctor", "fusion", "media", "preview", "project", "render", "timeline"):
         assert command in result.output
 
 
