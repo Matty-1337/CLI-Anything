@@ -406,3 +406,18 @@ def test_timeline_title_warns_about_ripple(fake_resolve):
     result = CliRunner().invoke(cli_mod.cli, ["--json", "--dry-run", "timeline", "title", "Text+", "--fusion"])
     assert result.exit_code == 0
     assert "ripple" in json.loads(result.output)["warning"]
+
+
+def test_project_open_refused_is_a_clean_error(monkeypatch):
+    class PM:
+        def LoadProject(self, name): return None
+        def GetCurrentProject(self): return None
+        def SaveProject(self): return True
+
+    class Resolve:
+        def GetProjectManager(self): return PM()
+
+    monkeypatch.setattr(cli_mod.backend, "connect", lambda: Resolve())
+    result = CliRunner().invoke(cli_mod.cli, ["--json", "project", "open", "Nope"])
+    assert result.exit_code == 1
+    assert "rejected" in json.loads(result.output)["error"]

@@ -66,6 +66,10 @@ def mutation(ctx: click.Context, action: str, details: dict[str, Any], callback)
     return emit(ctx, {"ok": True, "dry_run": False, "action": action, **details, "result": result})
 
 
+def _name_of(obj):
+    return obj.GetName() if obj is not None else None
+
+
 def _resolve_and_project():
     resolve = backend.connect()
     return resolve, backend.current_project(resolve)
@@ -215,7 +219,9 @@ def project_current(ctx):
 @command_guard
 def project_open(ctx, name):
     resolve = backend.connect()
-    return mutation(ctx, "project.open", {"name": name}, lambda: resolve.GetProjectManager().LoadProject(name).GetName())
+    # LoadProject returns None when Resolve refuses (no such project, or another script is
+    # driving Resolve); mutation() turns None into a clean "rejected" error.
+    return mutation(ctx, "project.open", {"name": name}, lambda: _name_of(resolve.GetProjectManager().LoadProject(name)))
 
 
 @project.command("create")
@@ -226,7 +232,7 @@ def project_open(ctx, name):
 def project_create(ctx, name, media_location):
     resolve = backend.connect()
     manager = resolve.GetProjectManager()
-    return mutation(ctx, "project.create", {"name": name, "media_location": str(media_location) if media_location else None}, lambda: manager.CreateProject(name, str(media_location) if media_location else None).GetName())
+    return mutation(ctx, "project.create", {"name": name, "media_location": str(media_location) if media_location else None}, lambda: _name_of(manager.CreateProject(name, str(media_location) if media_location else None)))
 
 
 @project.command("save")
