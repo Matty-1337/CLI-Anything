@@ -16,6 +16,7 @@ import click
 
 from .utils.config import default_config_path, save_config
 from .utils import resolve_backend as backend
+from .core import fusion as fx
 
 
 def _json_default(value):
@@ -41,7 +42,7 @@ def command_guard(function):
     def wrapped(*args, **kwargs):
         try:
             return function(*args, **kwargs)
-        except (backend.ResolveConnectionError, FileNotFoundError, ValueError, RuntimeError) as exc:
+        except (backend.ResolveConnectionError, fx.FusionError, FileNotFoundError, ValueError, RuntimeError) as exc:
             ctx = click.get_current_context()
             payload = {"ok": False, "error": str(exc), "type": type(exc).__name__}
             if ctx.find_root().obj.get("json"):
@@ -63,6 +64,10 @@ def mutation(ctx: click.Context, action: str, details: dict[str, Any], callback)
     if project is not None:
         backend.connect().GetProjectManager().SaveProject()
     return emit(ctx, {"ok": True, "dry_run": False, "action": action, **details, "result": result})
+
+
+def _name_of(obj):
+    return obj.GetName() if obj is not None else None
 
 
 def _resolve_and_project():
@@ -214,7 +219,9 @@ def project_current(ctx):
 @command_guard
 def project_open(ctx, name):
     resolve = backend.connect()
-    return mutation(ctx, "project.open", {"name": name}, lambda: resolve.GetProjectManager().LoadProject(name).GetName())
+    # LoadProject returns None when Resolve refuses (no such project, or another script is
+    # driving Resolve); mutation() turns None into a clean "rejected" error.
+    return mutation(ctx, "project.open", {"name": name}, lambda: _name_of(resolve.GetProjectManager().LoadProject(name)))
 
 
 @project.command("create")
@@ -225,7 +232,7 @@ def project_open(ctx, name):
 def project_create(ctx, name, media_location):
     resolve = backend.connect()
     manager = resolve.GetProjectManager()
-    return mutation(ctx, "project.create", {"name": name, "media_location": str(media_location) if media_location else None}, lambda: manager.CreateProject(name, str(media_location) if media_location else None).GetName())
+    return mutation(ctx, "project.create", {"name": name, "media_location": str(media_location) if media_location else None}, lambda: _name_of(manager.CreateProject(name, str(media_location) if media_location else None)))
 
 
 @project.command("save")
@@ -354,12 +361,22 @@ def timeline_append(ctx, clips, start_frame, end_frame):
 @click.pass_context
 @command_guard
 def timeline_title(ctx, title_name, fusion):
+    """Insert a title at the playhead on V1.
+
+    Resolve makes this a ripple insert on V1: everything after the playhead moves later by the
+    title length. Use 'fusion place' to put a title on another track without moving anything.
+    """
     _, current = _resolve_and_project()
     active = current.GetCurrentTimeline()
     if not active:
         raise RuntimeError("No timeline is currently open")
-    callback = lambda: (active.InsertFusionTitleIntoTimeline(title_name) if fusion else active.InsertTitleIntoTimeline(title_name)).GetUniqueId()
-    return mutation(ctx, "timeline.title", {"title_name": title_name, "fusion": fusion}, callback)
+
+    def callback():
+        item = active.InsertFusionTitleIntoTimeline(title_name) if fusion else active.InsertTitleIntoTimeline(title_name)
+        return item.GetUniqueId() if item else None
+
+    warning = "ripple insert on V1 at the playhead; use 'fusion place' to avoid moving the timeline"
+    return mutation(ctx, "timeline.title", {"title_name": title_name, "fusion": fusion, "warning": warning}, callback)
 
 
 @timeline.command("captions")
@@ -391,6 +408,157 @@ def timeline_export(ctx, path, export_format):
     target.parent.mkdir(parents=True, exist_ok=True)
     export_type = {"drt": resolve.EXPORT_DRT, "otio": resolve.EXPORT_OTIO, "fcpxml": resolve.EXPORT_FCPXML_1_10, "csv": resolve.EXPORT_TEXT_CSV, "edl": resolve.EXPORT_EDL}[export_format]
     return mutation(ctx, "timeline.export", {"path": str(target), "format": export_format}, lambda: active.Export(str(target), export_type, resolve.EXPORT_NONE))
+
+
+@cli.group()
+def fusion():
+    """Place and edit Fusion titles without moving anything on the timeline."""
+
+
+@fusion.command("carrier")
+@click.option("--seconds", type=int, default=60, show_default=True)
+@click.option("--width", type=int, default=1920, show_default=True)
+@click.option("--height", type=int, default=1080, show_default=True)
+@click.option("--fps", type=float, default=30.0, show_default=True)
+@click.option("--out", type=click.Path(path_type=Path), help="Where to write it (default: the CLI's carrier cache).")
+@click.pass_context
+@command_guard
+def fusion_carrier(ctx, seconds, width, height, fps, out):
+    """Make the transparent carrier clip that 'fusion place' puts titles on. Needs ffmpeg."""
+    target = Path(out) if out else fx.default_carrier_path(seconds, width, height, fps)
+    details = {"path": str(target), "seconds": seconds, "size": [width, height], "fps": fps}
+    if ctx.find_root().obj.get("dry_run"):
+        return emit(ctx, {"ok": True, "dry_run": True, "action": "fusion.carrier", **details})
+    fx.make_carrier(target, seconds, width, height, fps)
+    return emit(ctx, {"ok": True, "action": "fusion.carrier", **details, "bytes": target.stat().st_size})
+
+
+@fusion.command("export-template")
+@click.argument("title_name")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.pass_context
+@command_guard
+def fusion_export_template(ctx, title_name, path):
+    """Export a Fusion title template's comp (for 'fusion place') via a throwaway timeline."""
+    _, current = _resolve_and_project()
+    target = path.resolve()
+    return mutation(ctx, "fusion.export-template", {"title_name": title_name, "path": str(target)},
+                    lambda: fx.export_template(current, title_name, target))
+
+
+@fusion.command("place")
+@click.argument("comp_path", type=click.Path(path_type=Path))
+@click.option("--track", type=int, required=True, help="Video track index (V1 is refused without --allow-v1).")
+@click.option("--at", "at", required=True, help="Record frame or HH:MM:SS:FF timecode.")
+@click.option("--seconds", type=float, help="Length in seconds.")
+@click.option("--frames", type=int, help="Length in frames.")
+@click.option("--text", "texts", multiple=True, help="Tool=text: sets the tool's StyledText. Repeatable.")
+@click.option("--set", "sets", multiple=True, help="Tool.Input=value (JSON values allowed). Repeatable.")
+@click.option("--timeline", "timeline_name", help="Timeline name (default: the current timeline).")
+@click.option("--carrier", type=click.Path(path_type=Path), help="Transparent carrier clip (default: made and cached).")
+@click.option("--allow-v1", is_flag=True, help="Allow placing on V1.")
+@click.option("--allow-overlap", is_flag=True, help="Allow placing over an existing item on the track.")
+@click.pass_context
+@command_guard
+def fusion_place(ctx, comp_path, track, at, seconds, frames, texts, sets, timeline_name, carrier, allow_v1, allow_overlap):
+    """Place a Fusion comp as a title on an exact track, frame and length, and set its text."""
+    if (seconds is None) == (frames is None):
+        raise ValueError("give exactly one of --seconds or --frames")
+    assignments = [fx.parse_text(t) for t in texts] + [fx.parse_assignment(a) for a in sets]
+    _, current = _resolve_and_project()
+    timeline = fx.find_timeline(current, timeline_name)
+    record = fx.parse_frame(at, timeline)
+    length = frames if frames is not None else int(round(seconds * fx.fps_of(timeline)))
+    details = {"comp": str(comp_path), "timeline": timeline.GetName(), "track": track, "record_frame": record,
+               "frames": length, "set": [{"tool": t, "input": i, "value": v} for t, i, v in assignments]}
+    return mutation(ctx, "fusion.place", details, lambda: fx.place(
+        current, timeline, comp_path, track, record, length, assignments,
+        carrier=carrier, allow_v1=allow_v1, allow_overlap=allow_overlap))
+
+
+@fusion.command("tools")
+@click.argument("item_ref")
+@click.option("--timeline", "timeline_name")
+@click.option("--comp", "comp_index", type=int, default=1, show_default=True)
+@click.pass_context
+@command_guard
+def fusion_tools(ctx, item_ref, timeline_name, comp_index):
+    """List the tools in an item's Fusion comp. ITEM_REF is a unique id or V<track>@<frame|timecode>."""
+    _, current = _resolve_and_project()
+    item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
+    emit(ctx, {"item": fx.item_summary(item), "tools": fx.tool_list(fx.comp_of(item, comp_index))})
+
+
+@fusion.command("inputs")
+@click.argument("item_ref")
+@click.argument("tool_name")
+@click.option("--timeline", "timeline_name")
+@click.option("--comp", "comp_index", type=int, default=1, show_default=True)
+@click.pass_context
+@command_guard
+def fusion_inputs(ctx, item_ref, tool_name, timeline_name, comp_index):
+    """List a tool's inputs and current values."""
+    _, current = _resolve_and_project()
+    item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
+    emit(ctx, {"item": fx.item_summary(item), "tool": tool_name,
+               "inputs": fx.input_list(fx.comp_of(item, comp_index), tool_name)})
+
+
+@fusion.command("set")
+@click.argument("item_ref")
+@click.option("--text", "texts", multiple=True, help="Tool=text. Repeatable.")
+@click.option("--set", "sets", multiple=True, help="Tool.Input=value. Repeatable.")
+@click.option("--timeline", "timeline_name")
+@click.option("--comp", "comp_index", type=int, default=1, show_default=True)
+@click.pass_context
+@command_guard
+def fusion_set(ctx, item_ref, texts, sets, timeline_name, comp_index):
+    """Set text or inputs on an item's Fusion comp and read them back."""
+    assignments = [fx.parse_text(t) for t in texts] + [fx.parse_assignment(a) for a in sets]
+    if not assignments:
+        raise ValueError("nothing to set: give --text or --set")
+    _, current = _resolve_and_project()
+    item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
+    details = {"item": item.GetUniqueId(), "set": [{"tool": t, "input": i, "value": v} for t, i, v in assignments]}
+    return mutation(ctx, "fusion.set", details, lambda: fx.set_inputs(fx.comp_of(item, comp_index), assignments))
+
+
+@fusion.command("export")
+@click.argument("item_ref")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option("--timeline", "timeline_name")
+@click.option("--comp", "comp_index", type=int, default=1, show_default=True)
+@click.pass_context
+@command_guard
+def fusion_export(ctx, item_ref, path, timeline_name, comp_index):
+    """Export an item's Fusion comp to a .comp file."""
+    _, current = _resolve_and_project()
+    item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return mutation(ctx, "fusion.export", {"item": item.GetUniqueId(), "path": str(target)},
+                    lambda: str(target) if item.ExportFusionComp(str(target), comp_index) else None)
+
+
+@fusion.command("import")
+@click.argument("item_ref")
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
+@click.option("--timeline", "timeline_name")
+@click.pass_context
+@command_guard
+def fusion_import(ctx, item_ref, path, timeline_name):
+    """Import a .comp onto an item and fit its range to the item's length."""
+    _, current = _resolve_and_project()
+    item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
+
+    def execute():
+        comp = item.ImportFusionComp(str(path.resolve()))
+        if comp is None:
+            return None
+        comp.SetAttrs({"COMPN_GlobalEnd": float(item.GetDuration() - 1)})
+        return fx.item_summary(item)
+
+    return mutation(ctx, "fusion.import", {"item": item.GetUniqueId(), "path": str(path.resolve())}, execute)
 
 
 @cli.group()
