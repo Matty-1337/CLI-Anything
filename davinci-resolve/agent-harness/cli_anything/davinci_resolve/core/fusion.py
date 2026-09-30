@@ -248,6 +248,23 @@ def carrier_frames(clip) -> int:
 
 # ---------------------------------------------------------------- operations
 
+def authored_minimum(comp_path: Path) -> int:
+    """The shortest placement a comp can render at, in frames (0 when it has no limit).
+
+    A comp with a KeyStretcher only stretches: placed shorter than its authored range it fails to
+    render (proved on Resolve 21.1, a 150 frame placement of a 180 frame comp). The authored range
+    is the comp's GlobalRange.
+    """
+    try:
+        text = Path(comp_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    if "KeyStretcher" not in text:
+        return 0
+    match = re.search(r"GlobalRange\s*=\s*\{\s*(-?\d+)\s*,\s*(-?\d+)\s*\}", text)
+    return int(match.group(2)) - int(match.group(1)) + 1 if match else 0
+
+
 def occupied(timeline, track: int, start: int, end: int) -> list[dict[str, Any]]:
     """Items on the video track that overlap [start, end)."""
     if track > int(timeline.GetTrackCount("video")):
@@ -273,6 +290,9 @@ def place(project, timeline, comp_path: Path, track: int, record_frame: int, fra
         raise FusionError("refusing to place a title on V1, the program track; pass --allow-v1 to override")
     if frames < 1:
         raise FusionError("duration must be at least one frame")
+    minimum = authored_minimum(comp_path)
+    if frames < minimum:
+        raise FusionError(f"the comp is authored at {minimum} frames and only stretches; {frames} asked would fail to render")
     clash = occupied(timeline, track, record_frame, record_frame + frames)
     if clash and not allow_overlap:
         raise FusionError(f"V{track} already holds {len(clash)} item(s) in that range: {[c['name'] for c in clash]}")

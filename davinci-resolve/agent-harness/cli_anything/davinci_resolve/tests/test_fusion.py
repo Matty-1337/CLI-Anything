@@ -421,3 +421,20 @@ def test_project_open_refused_is_a_clean_error(monkeypatch):
     result = CliRunner().invoke(cli_mod.cli, ["--json", "project", "open", "Nope"])
     assert result.exit_code == 1
     assert "rejected" in json.loads(result.output)["error"]
+
+
+def test_place_refuses_shorter_than_a_stretcher_comp(carrier, tmp_path):
+    comp = tmp_path / "stretch.comp"
+    comp.write_text(
+        "Composition {\n\tGlobalRange = { 0, 89 },\n\tTools = ordered() {\n\t\tStretch = KeyStretcher {},\n\t},\n}\n",
+        encoding="utf-8",
+    )
+    assert fx.authored_minimum(comp) == 90
+    project = FakeProject()
+    with pytest.raises(fx.FusionError, match="authored at 90"):
+        fx.place(project, project.current, comp, 3, 108000, 89, carrier=carrier)
+    fx.place(project, project.current, comp, 3, 108000, 90, carrier=carrier)
+
+
+def test_authored_minimum_is_zero_without_a_stretcher(comp_file):
+    assert fx.authored_minimum(comp_file) == 0
