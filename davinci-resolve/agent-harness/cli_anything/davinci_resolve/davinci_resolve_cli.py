@@ -16,6 +16,7 @@ import click
 
 from .utils.config import default_config_path, save_config
 from .utils import resolve_backend as backend
+from .core import checks as chk
 from .core import fusion as fx
 
 
@@ -42,6 +43,8 @@ def command_guard(function):
     def wrapped(*args, **kwargs):
         try:
             return function(*args, **kwargs)
+        except click.exceptions.Exit:
+            raise  # a deliberate exit code; click's Exit is a RuntimeError and must not become an error payload
         except (backend.ResolveConnectionError, fx.FusionError, FileNotFoundError, ValueError, RuntimeError) as exc:
             ctx = click.get_current_context()
             payload = {"ok": False, "error": str(exc), "type": type(exc).__name__}
@@ -559,6 +562,80 @@ def fusion_import(ctx, item_ref, path, timeline_name):
         return fx.item_summary(item)
 
     return mutation(ctx, "fusion.import", {"item": item.GetUniqueId(), "path": str(path.resolve())}, execute)
+
+
+def _plan_or_run(ctx, action: str, details: dict[str, Any], run):
+    """Read-only checks: they write image files and never change Resolve, so no project save."""
+    if ctx.find_root().obj.get("dry_run"):
+        return emit(ctx, {"ok": True, "dry_run": True, "action": action, **details})
+    return emit(ctx, {"ok": True, "action": action, **run()})
+
+
+@cli.group()
+def export():
+    """Pictures of a timeline without rendering it (Resolve 21.2). Read only."""
+
+
+@export.command("thumbnails")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option("--at", "refs", multiple=True, required=True,
+              help="Record frame, HH:MM:SS:FF, or +N (offset from the timeline start). Repeatable.")
+@click.option("--label", "labels", multiple=True, help="Cell label, in --at order (default: the offset's timecode).")
+@click.option("--max-dimension", type=int, default=chk.DEFAULT_SHEET_MAX, show_default=True)
+@click.option("--quality", type=int, default=90, show_default=True)
+@click.option("--timeline", "timeline_name")
+@click.pass_context
+@command_guard
+def export_thumbnails(ctx, path, refs, labels, max_dimension, quality, timeline_name):
+    """One labelled contact sheet of a timeline's frames. Offsets are range-checked first."""
+    _, current = _resolve_and_project()
+    timeline = fx.find_timeline(current, timeline_name)
+    cells = chk.thumbnail_cells(timeline, refs, labels)
+    target = path.resolve()
+    details = {"timeline": timeline.GetName(), "path": str(target), "cells": cells, "max_dimension": max_dimension}
+    return _plan_or_run(ctx, "export.thumbnails", details, lambda: {
+        "timeline": timeline.GetName(), **chk.export_thumbnails(timeline, cells, target, max_dimension, quality)})
+
+
+@export.command("frame")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option("--at", "ref", required=True, help="Record frame, HH:MM:SS:FF, or +N (offset from the timeline start).")
+@click.option("--roi", nargs=4, type=float, help="Normalized region X Y W H, for example 0 0.7 1 0.3 for the lower third.")
+@click.option("--max-dimension", type=int, default=chk.DEFAULT_FRAME_MAX, show_default=True)
+@click.option("--quality", type=int, default=92, show_default=True)
+@click.option("--timeline", "timeline_name")
+@click.pass_context
+@command_guard
+def export_frame(ctx, path, ref, roi, max_dimension, quality, timeline_name):
+    """One frame, or a region of it, at a capped size."""
+    _, current = _resolve_and_project()
+    timeline = fx.find_timeline(current, timeline_name)
+    offset, region = chk.offset_of(timeline, ref), chk.parse_roi(roi)
+    target = path.resolve()
+    details = {"timeline": timeline.GetName(), "path": str(target), "frameOffset": offset, "roi": region or None,
+               "max_dimension": max_dimension}
+    return _plan_or_run(ctx, "export.frame", details, lambda: {
+        "timeline": timeline.GetName(), **chk.export_frame(timeline, offset, target, region, max_dimension, quality)})
+
+
+@cli.group()
+def grade():
+    """Read Color page grades back (Resolve 21.2). Read only: nothing here sets a grade."""
+
+
+@grade.command("cdl")
+@click.option("--track", type=int, default=1, show_default=True, help="Video track to read (V1 is fine: this only reads).")
+@click.option("--timeline", "timeline_name")
+@click.option("--fail-on-grade", is_flag=True, help="Exit 1 when any enabled node is not neutral.")
+@click.pass_context
+@command_guard
+def grade_cdl(ctx, track, timeline_name, fail_on_grade):
+    """Every node's CDL and enabled state for each item on a track, and which items carry a grade."""
+    _, current = _resolve_and_project()
+    result = chk.track_grades(fx.find_timeline(current, timeline_name), track)
+    emit(ctx, result)
+    if fail_on_grade and result["graded"]:
+        raise click.exceptions.Exit(1)
 
 
 @cli.group()
