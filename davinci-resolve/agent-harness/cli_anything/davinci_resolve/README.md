@@ -107,6 +107,26 @@ davinci --json fusion export V3@01:00:21:00 C:\titles\edited.comp
 item covering that frame. `place` refuses V1 (`--allow-v1`) and ranges that
 already hold an item (`--allow-overlap`).
 
+## Build checks (Resolve 21.2)
+
+Proved on Resolve Studio 21.2 (21.2.0.6), 2026-11-14. These read only: they
+write image files and never change the timeline, a clip, a grade or the project.
+
+```bash
+davinci --json export thumbnails C:\checks\sheet.jpg --at +0 --at 01:00:20:00 --label open --label title
+davinci --json export frame C:\checks\lower.jpg --at 01:00:20:12 --roi 0 0.7 1 0.3 --max-dimension 1920
+davinci --json grade cdl --track 1 --fail-on-grade
+```
+
+- `Timeline.ExportThumbnails` fails the whole sheet when one offset is past the
+  timeline's last frame, so `--at` is range-checked against the timeline's own
+  start and end before Resolve is called. `+N` is an offset from the start.
+- `Timeline.ExportFrame` returns the project's resolution unless a size is
+  passed, so `--max-dimension` always has a value.
+- `grade cdl` reads `TimelineItem.GetCDL` and `Graph.GetNodeEnabled` for every
+  node and lists the items whose enabled nodes are not neutral.
+- On a Resolve without these calls each command says "needs Resolve 21.2".
+
 ## Preview bundles
 
 `preview capture` exports the real current Resolve frame and a structured
