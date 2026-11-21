@@ -37,6 +37,24 @@ cli-anything-davinci-resolve --json auth status
   the process is `optical-flow`. Ripple is off unless `--ripple` (a rippled speed
   change has been reported to unlink tracks). Example, VOI slow motion:
   `timeline retime set --track 1 --item @108450 --speed 25 --process optical-flow --motion speed-warp-better`.
+- `effects list [--category fusion|ofx|audio] [--match text]` (Resolve 21.1.2+):
+  every clip effect Resolve can apply, with the `id` that `effect add` takes.
+- `transition add ITEM_REF --type "Cross Dissolve" --category simple|fusion|ofx
+  --position start|end --alignment left|center|right --frames N` (21.1.2+): a real
+  Edit page transition on one edge of a clip. It re-queries the track and reads
+  start, end and duration back from Resolve, never from the request; a wrong
+  duration (a 1 frame transition has been reported) is corrected once through
+  `TransitionDuration`; every clip on every video track must keep its start and
+  end. If a check still fails the transition is removed again and the command
+  exits 1 with what it saw. The clip needs handles to cover the duration.
+- `effect add ITEM_REF --category fusion|ofx --id <id> [--set Input=value]`
+  (21.1.2+): apply a clip effect, read it back from `GetEffects`, and set inputs
+  through the effect's Fusion comp (`Input=value` for its one tool, or
+  `Tool.Input=value`), each read back. `--set` is refused on OFX effects: Resolve
+  has no parameter API for them (use `fusion add-tool` inside a comp instead).
+  Any failed check removes the effect again. `transition add` and `effect add`
+  refuse V1 without `--allow-v1`. `ITEM_REF` is a clip's unique id or
+  `V<track>@<frame|timecode>`; transitions are never picked as the clip.
 - `fusion carrier|export-template|place|tools|inputs|set|export|import`: put a
   Fusion title on an exact track, frame and length without moving anything, and
   set its text. `place` refuses V1 and occupied ranges unless told otherwise.

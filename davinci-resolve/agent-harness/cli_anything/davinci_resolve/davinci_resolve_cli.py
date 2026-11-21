@@ -18,6 +18,7 @@ from .utils.config import default_config_path, save_config
 from .utils import resolve_backend as backend
 from .core import checks as chk
 from .core import fusion as fx
+from .core import effects as ef
 from .core import retime as rt
 
 
@@ -707,6 +708,89 @@ def timeline_retime_set(ctx, track, item_ref, speed, process, motion, ripple, pi
                "request": {"speed": speed, "process": process, "motion": motion, "ripple": ripple}}
     return mutation(ctx, "timeline.retime.set", details,
                     lambda: rt.apply(resolve, item, speed, process, motion, ripple, pitch))
+
+
+@cli.group()
+def effects():
+    """The clip effects Resolve can apply (Resolve 21.1.2 and later)."""
+
+
+@effects.command("list")
+@click.option("--category", type=click.Choice(ef.EFFECT_CATEGORIES), help="fusion, ofx or audio.")
+@click.option("--match", help="Case-insensitive text in the effect's name or id.")
+@click.option("--media-type", type=click.Choice(ef.MEDIA_TYPES), default="video", show_default=True)
+@click.pass_context
+@command_guard
+def effects_list(ctx, category, match, media_type):
+    """List effects from resolve.GetEffectsList: category, id (for `effect add --id`) and name."""
+    rows = ef.list_effects(backend.connect(), media_type, category, match)
+    return emit(ctx, {"ok": True, "count": len(rows), "effects": rows})
+
+
+_CLIP_REF = "ITEM_REF is a clip's unique id or V<track>@<frame|timecode>, e.g. V2@01:00:04:00."
+
+
+def _clip_on_track(timeline_name, item_ref, allow_v1):
+    resolve, current = _resolve_and_project()
+    timeline = fx.find_timeline(current, timeline_name)
+    clip, track = ef.find_clip(timeline, item_ref)
+    if track == 1 and not allow_v1:
+        raise fx.FusionError("refusing to change a clip on V1, the program track; pass --allow-v1 to override")
+    return resolve, timeline, clip, track
+
+
+@cli.group()
+def transition():
+    """Edit page transitions placed by script and read back (Resolve 21.1.2 and later)."""
+
+
+@transition.command("add", epilog=_CLIP_REF)
+@click.argument("item_ref")
+@click.option("--type", "type_name", required=True, help="Transition name as Resolve lists it, e.g. 'Cross Dissolve'.")
+@click.option("--category", type=click.Choice(ef.TRANSITION_CATEGORIES), default="simple", show_default=True)
+@click.option("--position", type=click.Choice(ef.POSITIONS), default="end", show_default=True,
+              help="Which edge of the clip.")
+@click.option("--alignment", type=click.Choice(ef.ALIGNMENTS), default="center", show_default=True)
+@click.option("--frames", type=int, required=True, help="Duration in frames; the clip needs handles to cover it.")
+@click.option("--timeline", "timeline_name")
+@click.option("--allow-v1", is_flag=True, help="Allow a transition on V1, the program track.")
+@click.pass_context
+@command_guard
+def transition_add(ctx, item_ref, type_name, category, position, alignment, frames, timeline_name, allow_v1):
+    """Add a transition to one edge of a clip. Re-queries the track and reads back start, end and
+    duration from Resolve, corrects a wrong duration once, checks no clip moved, and removes the
+    transition again if any check fails."""
+    options = ef.plan_transition(type_name, category, position, alignment, frames)
+    _, timeline, clip, track = _clip_on_track(timeline_name, item_ref, allow_v1)
+    details = {"clip": str(clip.GetUniqueId()), "track": track, "request": options}
+    return mutation(ctx, "transition.add", details,
+                    lambda: ef.add_transition(timeline, clip, track, type_name, category, position, alignment, frames))
+
+
+@cli.group()
+def effect():
+    """Clip effects applied to one item and read back (Resolve 21.1.2 and later)."""
+
+
+@effect.command("add", epilog=_CLIP_REF)
+@click.argument("item_ref")
+@click.option("--category", type=click.Choice(ef.EFFECT_CATEGORIES), required=True)
+@click.option("--id", "effect_id", required=True, help="Effect id from `effects list`.")
+@click.option("--set", "sets", multiple=True,
+              help="Input=value (the effect's one tool) or Tool.Input=value; fusion effects only. Repeatable.")
+@click.option("--timeline", "timeline_name")
+@click.option("--allow-v1", is_flag=True, help="Allow an effect on V1, the program track.")
+@click.pass_context
+@command_guard
+def effect_add(ctx, item_ref, category, effect_id, sets, timeline_name, allow_v1):
+    """Apply a clip effect, read it back from GetEffects, set any inputs through its Fusion comp and
+    read them back. Removes the effect again if any check fails."""
+    assignments = [ef.parse_effect_assignment(a) for a in sets]
+    resolve, _, clip, track = _clip_on_track(timeline_name, item_ref, allow_v1)
+    details = {"clip": str(clip.GetUniqueId()), "track": track, "category": category, "id": effect_id,
+               "set": [{"tool": t, "input": i, "value": v} for t, i, v in assignments]}
+    return mutation(ctx, "effect.add", details,
+                    lambda: ef.add_effect(resolve, clip, category, effect_id, assignments))
 
 
 @cli.group()
