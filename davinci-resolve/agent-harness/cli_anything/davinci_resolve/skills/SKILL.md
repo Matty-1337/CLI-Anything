@@ -28,6 +28,15 @@ cli-anything-davinci-resolve --json auth status
 - `timeline list|current|create|append|title|captions|export`: assemble and
   exchange timelines. `timeline title` is a ripple insert on V1 at the playhead
   (Resolve's behaviour): it moves everything after it. Use `fusion place` instead.
+- `timeline retime get|set --track N --item I` (Resolve 21.2): read or set one
+  item's clip speed (`--speed` percent, 25 is quarter speed, 0 freezes), retime
+  process (`--process project|nearest|frame-blend|optical-flow`) and motion
+  estimation (`--motion ...|speed-warp-faster|speed-warp-better`). `--item` is a
+  1-based index, `id:<unique id>` or `@<record frame>`. All three are read back;
+  a mismatch exits 1 and reports the state before. Speed Warp is refused unless
+  the process is `optical-flow`. Ripple is off unless `--ripple` (a rippled speed
+  change has been reported to unlink tracks). Example, VOI slow motion:
+  `timeline retime set --track 1 --item @108450 --speed 25 --process optical-flow --motion speed-warp-better`.
 - `fusion carrier|export-template|place|tools|inputs|set|export|import`: put a
   Fusion title on an exact track, frame and length without moving anything, and
   set its text. `place` refuses V1 and occupied ranges unless told otherwise.

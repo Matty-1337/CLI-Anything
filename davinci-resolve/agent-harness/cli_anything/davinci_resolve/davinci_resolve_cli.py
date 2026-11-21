@@ -18,6 +18,7 @@ from .utils.config import default_config_path, save_config
 from .utils import resolve_backend as backend
 from .core import checks as chk
 from .core import fusion as fx
+from .core import retime as rt
 
 
 def _json_default(value):
@@ -662,6 +663,50 @@ def grade_cdl(ctx, track, timeline_name, fail_on_grade):
     emit(ctx, result)
     if fail_on_grade and result["graded"]:
         raise click.exceptions.Exit(1)
+
+
+@timeline.group("retime")
+def timeline_retime():
+    """Clip speed, retime process and motion estimation (Speed Warp) for one item, read back."""
+
+
+_ITEM_HELP = "Item on the track: 1-based index (2), unique id (id:...), or a record frame it covers (@86460)."
+
+
+@timeline_retime.command("get")
+@click.option("--track", type=int, required=True, help="Video track number (V1 = 1).")
+@click.option("--item", "item_ref", required=True, help=_ITEM_HELP)
+@click.option("--timeline", "timeline_name")
+@click.pass_context
+@command_guard
+def timeline_retime_get(ctx, track, item_ref, timeline_name):
+    """Read an item's speed, retime process and motion estimation."""
+    resolve, current = _resolve_and_project()
+    item = rt.find_item(fx.find_timeline(current, timeline_name), track, item_ref)
+    return emit(ctx, {"ok": True, **rt.read(resolve, item)})
+
+
+@timeline_retime.command("set")
+@click.option("--track", type=int, required=True, help="Video track number (V1 = 1).")
+@click.option("--item", "item_ref", required=True, help=_ITEM_HELP)
+@click.option("--speed", type=float, help="Clip speed in percent: 25 is quarter speed, 0 freezes.")
+@click.option("--process", type=click.Choice(sorted(rt.RETIME)), help="Retime process.")
+@click.option("--motion", type=click.Choice(sorted(rt.MOTION)), help="Motion estimation; Speed Warp needs optical-flow.")
+@click.option("--ripple", is_flag=True, help="Ripple the timeline on a speed change (off by default).")
+@click.option("--pitch-correction/--no-pitch-correction", "pitch", default=None)
+@click.option("--timeline", "timeline_name")
+@click.pass_context
+@command_guard
+def timeline_retime_set(ctx, track, item_ref, speed, process, motion, ripple, pitch, timeline_name):
+    """Set speed, retime process and motion estimation on one item, then read all three back."""
+    resolve, current = _resolve_and_project()
+    item = rt.find_item(fx.find_timeline(current, timeline_name), track, item_ref)
+    before = rt.read(resolve, item)
+    rt.plan(before, speed, process, motion)
+    details = {"item": before["id"], "track": track, "before": before,
+               "request": {"speed": speed, "process": process, "motion": motion, "ripple": ripple}}
+    return mutation(ctx, "timeline.retime.set", details,
+                    lambda: rt.apply(resolve, item, speed, process, motion, ripple, pitch))
 
 
 @cli.group()
