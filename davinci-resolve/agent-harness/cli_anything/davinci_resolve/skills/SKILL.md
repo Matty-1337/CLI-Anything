@@ -67,6 +67,15 @@ Text goes on named inner Text+ tools (`Tool=text` sets `StyledText`). Published
 macro inputs ignore scripts. `--set Tool.Input=value` takes JSON values, so
 `--set 'Transform1.Center={"1":0.5,"2":0.9}'` sets a point.
 
+Add an effect inside a comp (any Fusion tool, Fuse or OFX plug-in, Continuum included):
+
+```bash
+davinci --json fusion add-tool V2@01:00:00:00 ofx.com.borisfx.bcc_dft.ofx.filmGlow --name Glow --before MediaOut1 --set Blend=0.6
+```
+
+It refuses V1 without `--allow-v1`, reads back the wiring, and undoes itself on any failure.
+Wire before the MediaOut the item renders (Map Creator Pro: `MediaOut1_1`).
+
 Build check workflow (Resolve 21.2):
 
 ```bash

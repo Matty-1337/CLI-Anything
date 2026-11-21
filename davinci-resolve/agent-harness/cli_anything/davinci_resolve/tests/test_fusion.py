@@ -363,7 +363,7 @@ def fake_resolve(monkeypatch):
 def test_help_lists_fusion_group():
     result = CliRunner().invoke(cli_mod.cli, ["fusion", "--help"])
     assert result.exit_code == 0
-    for command in ("carrier", "export-template", "place", "tools", "inputs", "set", "export", "import"):
+    for command in ("carrier", "export-template", "place", "tools", "inputs", "set", "add-tool", "export", "import"):
         assert command in result.output
 
 
@@ -438,3 +438,159 @@ def test_place_refuses_shorter_than_a_stretcher_comp(carrier, tmp_path):
 
 def test_authored_minimum_is_zero_without_a_stretcher(comp_file):
     assert fx.authored_minimum(comp_file) == 0
+
+
+# ---------------------------------------------------------------- add-tool
+
+class Port:
+    """A main image input or output; an input remembers the output it reads from."""
+
+    def __init__(self, tool):
+        self.tool, self.source = tool, None
+
+    def GetTool(self): return self.tool
+    def GetConnectedOutput(self): return self.source
+
+    def ConnectTo(self, out):
+        self.source = out
+        return True
+
+
+class WiredTool:
+    def __init__(self, comp, name, reg):
+        self.comp, self.attrs, self.values = comp, {"TOOLS_Name": name, "TOOLS_RegID": reg}, {}
+        self.main_in, self.main_out = Port(self), Port(self)
+
+    def GetAttrs(self): return self.attrs
+
+    def SetAttrs(self, attrs):
+        if attrs.get("TOOLS_Name") not in self.comp.tools:
+            self.comp.tools[attrs["TOOLS_Name"]] = self.comp.tools.pop(self.attrs["TOOLS_Name"])
+            self.attrs.update(attrs)
+
+    def FindMainInput(self, i): return self.main_in
+    def FindMainOutput(self, i): return self.main_out
+    def SetInput(self, ident, value): self.values[ident] = value
+    def GetInput(self, ident): return self.values.get(ident)
+    def Delete(self): self.comp.tools.pop(self.attrs["TOOLS_Name"], None)
+
+
+class WiredComp:
+    REGISTERED = {"ofx.com.borisfx.bcc_dft.ofx.filmGlow": "BCCFilmGlow"}
+
+    def __init__(self):
+        self.tools, self.locks = {}, 0
+        self.tools["SizePosition"] = WiredTool(self, "SizePosition", "Transform")
+        self.tools["MediaOut1"] = WiredTool(self, "MediaOut1", "MediaOut")
+        self.tools["MediaOut1"].main_in.source = self.tools["SizePosition"].main_out
+
+    def Lock(self): self.locks += 1
+    def Unlock(self): self.locks -= 1
+    def FindTool(self, name): return self.tools.get(name)
+    def GetToolList(self, selected): return dict(enumerate(self.tools.values(), 1))
+
+    def AddTool(self, reg, x, y):
+        if reg not in self.REGISTERED:
+            return None
+        name = f"{self.REGISTERED[reg]}{sum(t.attrs['TOOLS_RegID'] == reg for t in self.tools.values()) + 1}"
+        self.tools[name] = WiredTool(self, name, reg)
+        return self.tools[name]
+
+
+def _feeds(comp, name):
+    return comp.tools[name].main_in.source.GetTool().attrs["TOOLS_Name"]
+
+
+GLOW = "ofx.com.borisfx.bcc_dft.ofx.filmGlow"
+
+
+def test_add_tool_goes_between_a_tool_and_what_fed_it():
+    comp = WiredComp()
+    got = fx.add_tool(comp, GLOW, name="Glow", before="MediaOut1", assignments=[("Blend", 0.4)])
+    assert got["tool"] == "Glow" and got["type"] == GLOW
+    assert got["wired"] == {"from": "SizePosition", "to": "MediaOut1", "to_reads_from": "Glow"}
+    assert got["set"] == [{"input": "Blend", "value": 0.4, "read": 0.4}]
+    assert _feeds(comp, "MediaOut1") == "Glow" and _feeds(comp, "Glow") == "SizePosition"
+    assert comp.locks == 0
+
+
+def test_add_tool_without_before_adds_an_unwired_tool():
+    comp = WiredComp()
+    got = fx.add_tool(comp, GLOW)
+    assert got["tool"] == "BCCFilmGlow1" and got["wired"] is None
+    assert _feeds(comp, "MediaOut1") == "SizePosition"
+
+
+def test_an_unregistered_tool_says_to_restart_and_changes_nothing():
+    comp = WiredComp()
+    with pytest.raises(fx.FusionError, match="restart"):
+        fx.add_tool(comp, "ofx.com.borisfx.bcc_dft.ofx.notInstalled", before="MediaOut1")
+    assert set(comp.tools) == {"SizePosition", "MediaOut1"} and _feeds(comp, "MediaOut1") == "SizePosition"
+    assert comp.locks == 0
+
+
+def test_a_missing_before_tool_removes_the_new_tool():
+    comp = WiredComp()
+    with pytest.raises(fx.FusionError, match="No tool named 'Nope'"):
+        fx.add_tool(comp, GLOW, before="Nope")
+    assert set(comp.tools) == {"SizePosition", "MediaOut1"}
+
+
+def test_a_failed_input_puts_the_original_wiring_back():
+    comp = WiredComp()
+
+    def boom(ident, value):
+        raise RuntimeError("bad input")
+
+    original = comp.AddTool
+
+    def add(reg, x, y):
+        tool = original(reg, x, y)
+        tool.SetInput = boom
+        return tool
+
+    comp.AddTool = add
+    with pytest.raises(RuntimeError, match="bad input"):
+        fx.add_tool(comp, GLOW, before="MediaOut1", assignments=[("Blend", 1)])
+    assert set(comp.tools) == {"SizePosition", "MediaOut1"} and _feeds(comp, "MediaOut1") == "SizePosition"
+
+
+def test_a_taken_name_is_refused():
+    comp = WiredComp()
+    with pytest.raises(fx.FusionError, match="name is taken"):
+        fx.add_tool(comp, GLOW, name="MediaOut1")
+    assert set(comp.tools) == {"SizePosition", "MediaOut1"}
+
+
+def test_tool_assignment_takes_only_an_input_of_the_new_tool():
+    assert fx.parse_tool_assignment("Blend=0.5") == ("Blend", 0.5)
+    with pytest.raises(ValueError):
+        fx.parse_tool_assignment("Other.Blend=0.5")
+
+
+def _item_with(project, track, comp):
+    item = FakeItem("Glow host", 108000, 108090, track, comp)
+    project.current.tracks.setdefault(track, []).append(item)
+    return item
+
+
+def test_cli_add_tool_refuses_v1_and_dry_run_changes_nothing(fake_resolve):
+    comp = WiredComp()
+    v1 = _item_with(fake_resolve, 1, comp)
+    refused = CliRunner().invoke(cli_mod.cli, ["--json", "fusion", "add-tool", v1.id, GLOW, "--before", "MediaOut1"])
+    assert refused.exit_code == 1 and "V1" in json.loads(refused.output)["error"]
+    v2 = _item_with(fake_resolve, 2, comp)
+    dry = CliRunner().invoke(cli_mod.cli, ["--json", "--dry-run", "fusion", "add-tool", v2.id, GLOW,
+                                           "--before", "MediaOut1", "--set", "Blend=0.4"])
+    assert dry.exit_code == 0, dry.output
+    assert json.loads(dry.output)["set"] == [{"input": "Blend", "value": 0.4}]
+    assert set(comp.tools) == {"SizePosition", "MediaOut1"}
+
+
+def test_cli_add_tool_wires_and_reads_back(fake_resolve):
+    comp = WiredComp()
+    item = _item_with(fake_resolve, 2, comp)
+    result = CliRunner().invoke(cli_mod.cli, ["--json", "fusion", "add-tool", item.id, GLOW, "--name", "Glow",
+                                              "--before", "MediaOut1", "--set", "Blend=0.4"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["result"]["wired"]["to_reads_from"] == "Glow"

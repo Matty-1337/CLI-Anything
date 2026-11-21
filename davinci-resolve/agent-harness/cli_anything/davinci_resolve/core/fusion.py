@@ -187,6 +187,72 @@ def set_inputs(comp, assignments: Iterable[tuple[str, str, Any]]) -> list[dict[s
     return applied
 
 
+def _output_owner(inp) -> str | None:
+    out = inp.GetConnectedOutput() if inp is not None else None
+    tool = out.GetTool() if out is not None else None
+    return (tool.GetAttrs() or {}).get("TOOLS_Name") if tool is not None else None
+
+
+def add_tool(comp, reg_id: str, name: str | None = None, before: str | None = None,
+             assignments: Iterable[tuple[str, Any]] = ()) -> dict[str, Any]:
+    """Add a registered tool (a Fusion tool, Fuse or OFX plug-in such as Continuum) to a comp.
+
+    With ``before``, the tool goes on that tool's main input: whatever fed it now feeds the new tool,
+    and the new tool feeds it. Inputs are set on the new tool and read back, and so is the wiring.
+    Anything that fails removes the new tool again, so a comp is never left half changed.
+    """
+    assignments = list(assignments)
+    comp.Lock()
+    tool = down_in = source = None
+    try:
+        tool = comp.AddTool(reg_id, -32768, -32768)
+        if tool is None:
+            raise FusionError(f"Fusion has no tool registered as {reg_id!r}; a plug-in installed while "
+                              "Resolve was open loads only after a restart")
+        if name:
+            tool.SetAttrs({"TOOLS_Name": name})
+        actual = (tool.GetAttrs() or {}).get("TOOLS_Name")
+        if name and actual != name:
+            raise FusionError(f"Fusion named the tool {actual!r}, not {name!r} (the name is taken)")
+        wired = None
+        if before:
+            down = comp.FindTool(before)
+            if down is None:
+                raise FusionError(f"No tool named {before!r} in the comp")
+            target_in, tool_in, tool_out = down.FindMainInput(1), tool.FindMainInput(1), tool.FindMainOutput(1)
+            if target_in is None or tool_in is None or tool_out is None:
+                raise FusionError(f"{reg_id} or {before} has no main image input or output to wire")
+            down_in, source = target_in, target_in.GetConnectedOutput()
+            if source is not None and not tool_in.ConnectTo(source):
+                raise FusionError(f"could not connect {actual} to what fed {before}")
+            if not down_in.ConnectTo(tool_out):
+                raise FusionError(f"could not connect {before} to {actual}")
+            wired = {"from": _output_owner(tool_in), "to": before, "to_reads_from": _output_owner(down_in)}
+            if wired["to_reads_from"] != actual:
+                raise FusionError(f"{before} still reads from {wired['to_reads_from']!r} after wiring")
+        applied = []
+        for inp, value in assignments:
+            tool.SetInput(inp, value)
+            applied.append({"input": inp, "value": value, "read": tool.GetInput(inp)})
+    except Exception:
+        if down_in is not None and source is not None:
+            down_in.ConnectTo(source)  # put the original wiring back before the tool goes
+        if tool is not None:
+            tool.Delete()
+        raise
+    finally:
+        comp.Unlock()
+    return {"tool": actual, "type": (tool.GetAttrs() or {}).get("TOOLS_RegID"), "wired": wired, "set": applied}
+
+
+def parse_tool_assignment(text: str) -> tuple[str, Any]:
+    """``Input=value`` for the tool being added (JSON values allowed, as for ``--set``)."""
+    inp, sep, raw = text.partition("=")
+    if not sep or not inp.strip() or "." in inp:
+        raise ValueError(f"expected Input=value for the new tool, got {text!r}")
+    return inp.strip(), parse_value(raw)
+
+
 # ---------------------------------------------------------------- carrier
 
 def default_carrier_path(seconds: int = 60, width: int = 1920, height: int = 1080, fps: float = 30.0) -> Path:

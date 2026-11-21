@@ -107,6 +107,41 @@ davinci --json fusion export V3@01:00:21:00 C:\titles\edited.comp
 item covering that frame. `place` refuses V1 (`--allow-v1`) and ranges that
 already hold an item (`--allow-overlap`).
 
+### Adding a tool (Continuum and other OFX plug-ins)
+
+`fusion add-tool` adds any registered tool to an item's comp: a Fusion tool, a Fuse, or an
+OFX plug-in such as Boris FX Continuum (`ofx.com.borisfx.bcc_dft.ofx.<effect>`). With
+`--before`, it goes on that tool's main input: what fed it now feeds the new tool. It reads
+back the wiring and every `--set Input=value`, and removes the tool again (restoring the
+wiring) if any step fails. It refuses V1 without `--allow-v1`. An ID Fusion does not know
+means the plug-in is not loaded: a plug-in installed while Resolve was open loads only after
+a restart.
+
+```bash
+davinci --json fusion add-tool V2@01:00:00:00 ofx.com.borisfx.bcc_dft.ofx.filmGlow --name Glow --before MediaOut1 --set Blend=0.6
+```
+
+Wire before the MediaOut the item actually renders. Most titles have one `MediaOut1`. Map
+Creator Pro templates render through `MediaOut1_1`; their `MediaOut1` is a dead end.
+
+Proved on Resolve Studio 21.2 with Continuum 2027 (20.0.2), 2026-11-21. Fusion lists 426
+Continuum tool IDs, including transitions (`...ofx.dissolveFilmGlowTransition`).
+
+### Template inputs (Video Editor Studio and Map Creator Pro)
+
+Read with `fusion tools` and `fusion inputs`, set with `fusion set`, on Resolve 21.2:
+
+- **Video Editor Studio titles** (for example `02. Centered [ The Journalist Pack ]`): one
+  Text+ tool per line (`Text1` the small line above, `Text1_1` the headline, `Text1_1_1` the
+  line below). Each takes `StyledText`, `Font`, `Style`, `Size`, and its fill colour as `Red1`,
+  `Green1`, `Blue1` (0 to 1). An empty `StyledText` hides a line. The macro group's own
+  published inputs (`Group1.Label1` and so on) read back `0.0` and ignore scripts.
+- **Map Creator Pro maps** (for example `1. United States (Hawaii) - Base Map (Lite)`): colour
+  sits on Background tools with `TopLeftRed`, `TopLeftGreen`, `TopLeftBlue`: `Canvas` (the
+  water and backdrop), `Land_Color`, `Water_Color`, `Country_Color`, `Regions_Color`.
+  `StyleCtrl.StyleGenerator` picks a preset style through the template's own script, which
+  sets only its own nodes.
+
 ## Build checks (Resolve 21.2)
 
 Proved on Resolve Studio 21.2 (21.2.0.6), 2026-11-14. These read only: they
