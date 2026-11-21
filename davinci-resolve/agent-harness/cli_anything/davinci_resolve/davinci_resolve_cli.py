@@ -526,6 +526,32 @@ def fusion_set(ctx, item_ref, texts, sets, timeline_name, comp_index):
     return mutation(ctx, "fusion.set", details, lambda: fx.set_inputs(fx.comp_of(item, comp_index), assignments))
 
 
+@fusion.command("add-tool")
+@click.argument("item_ref")
+@click.argument("reg_id")
+@click.option("--name", help="Name for the new tool (refused if Fusion picks another).")
+@click.option("--before", "before", help="Wire the tool onto this tool's main input, e.g. MediaOut1.")
+@click.option("--set", "sets", multiple=True, help="Input=value on the new tool. Repeatable.")
+@click.option("--timeline", "timeline_name")
+@click.option("--comp", "comp_index", type=int, default=1, show_default=True)
+@click.option("--allow-v1", is_flag=True, help="Allow changing a comp on V1, the program track.")
+@click.pass_context
+@command_guard
+def fusion_add_tool(ctx, item_ref, reg_id, name, before, sets, timeline_name, comp_index, allow_v1):
+    """Add a tool to an item's Fusion comp: a Fusion tool, Fuse or OFX plug-in such as Continuum
+    (REG_ID like ofx.com.borisfx.bcc_dft.ofx.filmGlow). Reads back the wiring and every input set."""
+    assignments = [fx.parse_tool_assignment(a) for a in sets]
+    _, current = _resolve_and_project()
+    item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
+    track = item.GetTrackTypeAndIndex() if hasattr(item, "GetTrackTypeAndIndex") else None
+    if track and int(track[1]) == 1 and not allow_v1:
+        raise fx.FusionError("refusing to change a comp on V1, the program track; pass --allow-v1 to override")
+    details = {"item": item.GetUniqueId(), "reg_id": reg_id, "name": name, "before": before,
+               "set": [{"input": i, "value": v} for i, v in assignments]}
+    return mutation(ctx, "fusion.add_tool", details,
+                    lambda: fx.add_tool(fx.comp_of(item, comp_index), reg_id, name, before, assignments))
+
+
 @fusion.command("export")
 @click.argument("item_ref")
 @click.argument("path", type=click.Path(path_type=Path))

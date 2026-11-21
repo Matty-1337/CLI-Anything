@@ -31,6 +31,14 @@ cli-anything-davinci-resolve --json auth status
 - `fusion carrier|export-template|place|tools|inputs|set|export|import`: put a
   Fusion title on an exact track, frame and length without moving anything, and
   set its text. `place` refuses V1 and occupied ranges unless told otherwise.
+- `export thumbnails|frame` (Resolve 21.2, read only): a labelled contact sheet
+  of timeline frames, or one frame or a normalized region of it (`--roi X Y W H`),
+  at a capped size. `--at` takes a record frame, a timecode or `+N` (an offset
+  from the timeline start); offsets outside the timeline are refused before
+  Resolve is called, because one bad offset fails a whole 21.2 sheet.
+- `grade cdl` (Resolve 21.2, read only): every Color page node's CDL and enabled
+  state per item on a track, and which items carry a grade. `--fail-on-grade`
+  exits 1 when any enabled node is not neutral. Nothing here sets a grade.
 - `render capabilities|jobs|add|start|status`: use Resolve's native render queue.
 - `preview recipes|capture|latest`: publish truthful preview bundles.
 
@@ -58,6 +66,26 @@ davinci --json fusion set V3@01:00:21:00 --text "mainText=New name"
 Text goes on named inner Text+ tools (`Tool=text` sets `StyledText`). Published
 macro inputs ignore scripts. `--set Tool.Input=value` takes JSON values, so
 `--set 'Transform1.Center={"1":0.5,"2":0.9}'` sets a point.
+
+Add an effect inside a comp (any Fusion tool, Fuse or OFX plug-in, Continuum included):
+
+```bash
+davinci --json fusion add-tool V2@01:00:00:00 ofx.com.borisfx.bcc_dft.ofx.filmGlow --name Glow --before MediaOut1 --set Blend=0.6
+```
+
+It refuses V1 without `--allow-v1`, reads back the wiring, and undoes itself on any failure.
+Wire before the MediaOut the item renders (Map Creator Pro: `MediaOut1_1`).
+
+Build check workflow (Resolve 21.2):
+
+```bash
+davinci --json export thumbnails C:\checks\sheet.jpg --at +0 --at 01:00:20:00 --label open --label title
+davinci --json export frame C:\checks\lower.jpg --at 01:00:20:12 --roi 0 0.7 1 0.3 --max-dimension 1920
+davinci --json grade cdl --track 1 --fail-on-grade
+```
+
+These check a build. They never replace review frames taken from the final
+rendered file.
 
 Preview producer/consumer example:
 
