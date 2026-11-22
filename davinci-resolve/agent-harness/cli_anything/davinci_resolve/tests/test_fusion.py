@@ -594,3 +594,30 @@ def test_cli_add_tool_wires_and_reads_back(fake_resolve):
                                               "--before", "MediaOut1", "--set", "Blend=0.4"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["result"]["wired"]["to_reads_from"] == "Glow"
+
+# ---------------------------------------------------------------- place on a named, non-current timeline
+
+def test_place_on_a_named_timeline_appends_there_and_restores_the_current_one(carrier, comp_file):
+    project = FakeProject()
+    episode = project.current
+    other = FakeTimeline("Other", tracks=1)
+    project.timelines.append(other)
+    result = fx.place(project, other, comp_file, track=2, record_frame=108000, frames=30, carrier=carrier)
+    assert result["track"] == ["video", 2]
+    assert [i.GetUniqueId() for i in other.tracks[2]] == [result["id"]], "the item is on the named timeline"
+    assert all(not items for items in episode.tracks.values()), "the current timeline is untouched"
+    assert project.current is episode, "the previous current timeline is put back"
+
+
+def test_place_removes_a_carrier_that_lands_on_the_wrong_track(carrier, comp_file):
+    project = FakeProject()
+    tl = project.current
+    real_append = project.pool.AppendToTimeline
+
+    def lands_on_v1(infos):  # what Resolve did when the target track did not exist on the current timeline
+        return real_append([{**info, "trackIndex": 1} for info in infos])
+
+    project.pool.AppendToTimeline = lands_on_v1
+    with pytest.raises(fx.FusionError, match="landed on video track 1, not V3 .*removed again: True"):
+        fx.place(project, tl, comp_file, track=3, record_frame=108000, frames=30, carrier=carrier)
+    assert tl.tracks[1] == [] and len(tl.deleted) == 1

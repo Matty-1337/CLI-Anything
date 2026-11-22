@@ -339,6 +339,19 @@ def occupied(timeline, track: int, start: int, end: int) -> list[dict[str, Any]]
             if item.GetStart() < end and start < item.GetEnd()]
 
 
+def landed(timeline, item, track: int, record_frame: int) -> str | None:
+    """None when ``item`` sits on video ``track`` of ``timeline`` starting at ``record_frame``; else where it is."""
+    got = item.GetTrackTypeAndIndex() if hasattr(item, "GetTrackTypeAndIndex") else None
+    if got and (str(got[0]) != "video" or int(got[1]) != int(track)):
+        return f"on {got[0]} track {got[1]}"
+    if int(item.GetStart()) != int(record_frame):
+        return f"at frame {item.GetStart()}"
+    listed = {str(i.GetUniqueId()) for i in (timeline.GetItemListInTrack("video", track) or [])}
+    if str(item.GetUniqueId()) not in listed:
+        return "on another timeline"
+    return None
+
+
 def place(project, timeline, comp_path: Path, track: int, record_frame: int, frames: int,
           assignments: Iterable[tuple[str, str, Any]] = (), carrier: Path | None = None,
           allow_v1: bool = False, allow_overlap: bool = False) -> dict[str, Any]:
@@ -374,13 +387,28 @@ def place(project, timeline, comp_path: Path, track: int, record_frame: int, fra
     while int(timeline.GetTrackCount("video")) < track:
         if not timeline.AddTrack("video"):
             raise FusionError(f"could not add video track {int(timeline.GetTrackCount('video')) + 1}")
-    placed = project.GetMediaPool().AppendToTimeline([{
-        "mediaPoolItem": clip, "trackIndex": track, "recordFrame": record_frame,
-        "startFrame": 0, "endFrame": frames, "mediaType": 1,
-    }]) or []
-    if not placed:
-        raise FusionError("Resolve rejected the carrier append")
-    item = placed[0]
+    # MediaPool.AppendToTimeline always appends to the *current* timeline: make the named one current for
+    # the append (and put the previous one back), then prove the item landed where it was asked.
+    previous = project.GetCurrentTimeline()
+    switched = previous is None or str(previous.GetUniqueId()) != str(timeline.GetUniqueId())
+    if switched and not project.SetCurrentTimeline(timeline):
+        raise FusionError(f"could not make {timeline.GetName()!r} the current timeline for the append")
+    try:
+        placed = project.GetMediaPool().AppendToTimeline([{
+            "mediaPoolItem": clip, "trackIndex": track, "recordFrame": record_frame,
+            "startFrame": 0, "endFrame": frames, "mediaType": 1,
+        }]) or []
+        if not placed:
+            raise FusionError("Resolve rejected the carrier append")
+        item = placed[0]
+        where = landed(timeline, item, track, record_frame)
+        if where:
+            removed = bool(project.GetCurrentTimeline().DeleteClips([item], False))
+            raise FusionError(f"the carrier landed {where}, not V{track} at {record_frame} on "
+                              f"{timeline.GetName()!r}; removed again: {removed}")
+    finally:
+        if switched and previous is not None:
+            project.SetCurrentTimeline(previous)
     comp = item.ImportFusionComp(str(comp_path))
     if comp is None:
         timeline.DeleteClips([item], False)
