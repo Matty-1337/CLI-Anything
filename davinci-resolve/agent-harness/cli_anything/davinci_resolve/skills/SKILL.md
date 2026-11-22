@@ -37,6 +37,18 @@ cli-anything-davinci-resolve --json auth status
   the process is `optical-flow`. Ripple is off unless `--ripple` (a rippled speed
   change has been reported to unlink tracks). Example, VOI slow motion:
   `timeline retime set --track 1 --item @108450 --speed 25 --process optical-flow --motion speed-warp-better`.
+- `timeline create NAME [--width W --height H] [--fps 30]`: an empty timeline with its
+  own size and frame rate (custom timeline settings), each read back; a value that
+  does not read back removes the new timeline again. `--fps` is refused with
+  `--clip` (Resolve fixes the frame rate once a timeline has clips).
+- `timeline marker list|add|import|check`: timeline markers, framed from the
+  timeline start (0 is its first frame; `list` also gives the record frame).
+  `add --frame N --name X [--color Blue] [--duration N] [--note] [--custom-data]`
+  reads the marker back and removes it again if it does not match; one marker per
+  frame. `import CUE_SHEET [--beats] [--replace]` places one marker per cue of a
+  Motion Studio cue sheet (`motion cues`), refuses a sheet whose fps differs from
+  the timeline, and takes its own markers back out if any fails. `check CUE_SHEET`
+  (read only) exits 1 unless every cue has its marker.
 - `effects list [--category fusion|ofx|audio] [--match text]` (Resolve 21.1.2+):
   every clip effect Resolve can apply, with the `id` that `effect add` takes.
 - `transition add ITEM_REF --type "Cross Dissolve" --category simple|fusion|ofx
