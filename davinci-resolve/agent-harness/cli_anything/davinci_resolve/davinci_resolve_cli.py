@@ -20,6 +20,7 @@ from .core import checks as chk
 from .core import fusion as fx
 from .core import effects as ef
 from .core import retime as rt
+from .core import markers as mk
 
 
 def _json_default(value):
@@ -317,9 +318,16 @@ def timeline_current(ctx):
 @timeline.command("create")
 @click.argument("name")
 @click.option("--clip", "clips", multiple=True, help="Media item name, id, or exact file path.")
+@click.option("--width", type=int, help="Timeline width in pixels (with --height); sets custom timeline settings.")
+@click.option("--height", type=int, help="Timeline height in pixels (with --width).")
+@click.option("--fps", help="Timeline frame rate, e.g. 30, 29.97 or '29.97 DF'. Empty timelines only.")
 @click.pass_context
 @command_guard
-def timeline_create(ctx, name, clips):
+def timeline_create(ctx, name, clips, width, height, fps):
+    """Create a timeline, optionally with its own size and frame rate (each read back)."""
+    settings = mk.plan_settings(width, height, fps)
+    if fps is not None and clips:
+        raise ValueError("--fps needs an empty timeline: Resolve fixes a timeline's frame rate once it has clips")
     _, current = _resolve_and_project()
     pool = current.GetMediaPool()
 
@@ -329,9 +337,19 @@ def timeline_create(ctx, name, clips):
             created = pool.CreateTimelineFromClips(name, [{"mediaPoolItem": item} for item in items])
         else:
             created = pool.CreateEmptyTimeline(name)
-        return created.GetUniqueId() if created else None
+        if not created:
+            return None
+        applied = None
+        if settings:
+            try:
+                applied = mk.apply_settings(created, settings)
+            except Exception as exc:
+                deleter = getattr(pool, "DeleteTimelines", None)
+                removed = bool(callable(deleter) and deleter([created]))
+                raise RuntimeError(f"{exc}; new timeline removed again: {removed}") from exc
+        return {"id": created.GetUniqueId(), "start_frame": created.GetStartFrame(), "settings": applied}
 
-    return mutation(ctx, "timeline.create", {"name": name, "clips": list(clips)}, execute)
+    return mutation(ctx, "timeline.create", {"name": name, "clips": list(clips), "settings": settings}, execute)
 
 
 @timeline.command("append")
@@ -413,6 +431,84 @@ def timeline_export(ctx, path, export_format):
     target.parent.mkdir(parents=True, exist_ok=True)
     export_type = {"drt": resolve.EXPORT_DRT, "otio": resolve.EXPORT_OTIO, "fcpxml": resolve.EXPORT_FCPXML_1_10, "csv": resolve.EXPORT_TEXT_CSV, "edl": resolve.EXPORT_EDL}[export_format]
     return mutation(ctx, "timeline.export", {"path": str(target), "format": export_format}, lambda: active.Export(str(target), export_type, resolve.EXPORT_NONE))
+
+
+def _active_timeline():
+    _, current = _resolve_and_project()
+    active = current.GetCurrentTimeline()
+    if not active:
+        raise RuntimeError("No timeline is currently open")
+    return active
+
+
+def _read_cue_sheet(path: Path) -> dict[str, Any]:
+    sheet = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(sheet, dict) or not isinstance(sheet.get("cues"), list) or "fps" not in sheet:
+        raise ValueError(f"{path} is not a cue sheet (needs fps and a cues list; see motion-studio `motion cues`)")
+    return sheet
+
+
+@timeline.group("marker")
+def timeline_marker():
+    """Timeline markers: add, list, import a cue sheet, check one. Frames count from the timeline start."""
+
+
+@timeline_marker.command("list")
+@click.pass_context
+@command_guard
+def timeline_marker_list(ctx):
+    """Every marker on the current timeline, with its record frame (start frame plus offset)."""
+    active = _active_timeline()
+    rows = mk.list_markers(active)
+    emit(ctx, {"timeline": active.GetName(), "start_frame": active.GetStartFrame(), "count": len(rows), "markers": rows})
+
+
+@timeline_marker.command("add")
+@click.option("--frame", type=int, required=True, help="Frames from the timeline start (0 is the first frame).")
+@click.option("--name", required=True)
+@click.option("--color", type=click.Choice(mk.MARKER_COLORS), default="Blue", show_default=True)
+@click.option("--note", default="")
+@click.option("--duration", type=int, default=1, show_default=True, help="Length in frames.")
+@click.option("--custom-data", default=None, help="Hidden data kept with the marker.")
+@click.pass_context
+@command_guard
+def timeline_marker_add(ctx, frame, name, color, note, duration, custom_data):
+    """Add one marker to the current timeline and read it back."""
+    mk.plan_marker(frame, name, color, note, duration, custom_data)
+    active = _active_timeline()
+    return mutation(ctx, "timeline.marker.add", {"timeline": active.GetName(), "frame": frame, "name": name},
+                    lambda: mk.add_marker(active, frame, name, color, note, duration, custom_data))
+
+
+@timeline_marker.command("import")
+@click.argument("cue_sheet", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--color", type=click.Choice(mk.MARKER_COLORS), default="Blue", show_default=True)
+@click.option("--beats", is_flag=True, help="Also mark each beat as a duration marker (Green).")
+@click.option("--replace", is_flag=True, help="First remove markers an earlier cue import added.")
+@click.pass_context
+@command_guard
+def timeline_marker_import(ctx, cue_sheet, color, beats, replace):
+    """One marker per cue of a Motion Studio cue sheet (`motion cues`), each read back."""
+    sheet = _read_cue_sheet(cue_sheet)
+    planned = mk.plan_cues(sheet, color, beats)
+    active = _active_timeline()
+    return mutation(ctx, "timeline.marker.import", {"timeline": active.GetName(), "cue_sheet": str(cue_sheet),
+                                                    "markers": len(planned)},
+                    lambda: mk.import_cues(active, sheet, color, beats, replace))
+
+
+@timeline_marker.command("check")
+@click.argument("cue_sheet", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.pass_context
+@command_guard
+def timeline_marker_check(ctx, cue_sheet):
+    """Read only: exit 1 unless every cue in the sheet has a marker on its frame."""
+    sheet = _read_cue_sheet(cue_sheet)
+    active = _active_timeline()
+    missing = mk.compare(active, sheet)
+    emit(ctx, {"ok": not missing, "timeline": active.GetName(), "cues": len(sheet["cues"]), "missing": missing})
+    if missing:
+        raise click.exceptions.Exit(1)
 
 
 @cli.group()
