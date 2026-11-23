@@ -168,6 +168,59 @@ def input_list(comp, tool_name: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: str(row["id"]))
 
 
+def parse_frames(spec: str) -> list[int]:
+    """``n``, ``a:b`` (inclusive) or ``a:b:step`` as a list of comp frames."""
+    parts = str(spec).strip().split(":")
+    if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
+        raise ValueError(f"expected FRAME, FIRST:LAST or FIRST:LAST:STEP with whole frames, got {spec!r}")
+    nums = [int(p) for p in parts]
+    if len(nums) == 1:
+        return nums
+    first, last = nums[0], nums[1]
+    step = nums[2] if len(nums) == 3 else 1
+    if last < first or step < 1:
+        raise ValueError(f"frames {spec!r}: LAST must not be before FIRST and STEP must be 1 or more")
+    return list(range(first, last + 1, step))
+
+
+def _plain(value: Any) -> Any:
+    """Fusion returns Points as tables keyed 1, 2, 3; make them JSON-plain without changing a value."""
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    return value
+
+
+def read_inputs(comp, tool_name: str, inputs: Iterable[str], frames: Iterable[int]) -> dict[str, Any]:
+    """Read named inputs of a tool at each comp frame (``tool.GetInput(id, frame)``). Never writes anything.
+
+    Frames are comp frames. ``comp_range`` is returned so a caller can map them to source or record frames."""
+    tool = comp.FindTool(tool_name)
+    if tool is None:
+        raise FusionError(f"No tool named {tool_name!r} in the comp")
+    inputs = list(inputs)
+    known = {(inp.GetAttrs() or {}).get("INPS_ID") for inp in (tool.GetInputList() or {}).values()}
+    unknown = [i for i in inputs if i not in known]
+    if unknown:
+        raise FusionError(f"{tool_name} has no input {', '.join(map(repr, unknown))}; 'fusion inputs' lists them")
+    attrs = comp.GetAttrs() or {}
+    rows = [{"frame": f, "values": {i: _plain(tool.GetInput(i, f)) for i in inputs}} for f in frames]
+    return {"tool": tool_name, "type": (tool.GetAttrs() or {}).get("TOOLS_RegID"), "inputs": inputs,
+            "comp_range": [attrs.get("COMPN_GlobalStart"), attrs.get("COMPN_GlobalEnd")], "frames": rows}
+
+
+def add_comp(item) -> dict[str, Any]:
+    """Add a new Fusion comp to a timeline item and read it back."""
+    before = int(item.GetFusionCompCount() or 0)
+    comp = item.AddFusionComp()
+    after = int(item.GetFusionCompCount() or 0)
+    if comp is None or after != before + 1:
+        raise FusionError(f"Resolve did not add a Fusion comp to {item.GetName()} (comps {before} -> {after})")
+    return {"item": item.GetUniqueId(), "comps": {"before": before, "after": after, "index": after},
+            "tools": tool_list(comp)}
+
+
 def set_inputs(comp, assignments: Iterable[tuple[str, str, Any]]) -> list[dict[str, Any]]:
     """Set each (tool, input, value) and read it back. A missing tool is an error, never a skip."""
     applied = []
