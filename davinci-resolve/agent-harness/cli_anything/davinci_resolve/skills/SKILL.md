@@ -70,6 +70,11 @@ cli-anything-davinci-resolve --json auth status
 - `fusion carrier|export-template|place|tools|inputs|set|export|import`: put a
   Fusion title on an exact track, frame and length without moving anything, and
   set its text. `place` refuses V1 and occupied ranges unless told otherwise.
+- `fusion add-comp ITEM_REF`: give a timeline item a new Fusion comp (MediaIn >
+  MediaOut) and read it back. Refuses V1 without `--allow-v1`; `--dry-run` works.
+- `fusion read ITEM_REF --tool NAME --input ID [--input ID ...] --frames A:B
+  [--out file.json]` (read only): a tool's inputs at every comp frame, for
+  example a tracker's corner Points. Unknown tools or inputs are refused.
 - `export thumbnails|frame` (Resolve 21.2, read only): a labelled contact sheet
   of timeline frames, or one frame or a normalized region of it (`--roi X Y W H`),
   at a capped size. `--at` takes a record frame, a timecode or `+N` (an offset
@@ -114,6 +119,21 @@ davinci --json fusion add-tool V2@01:00:00:00 ofx.com.borisfx.bcc_dft.ofx.filmGl
 
 It refuses V1 without `--allow-v1`, reads back the wiring, and undoes itself on any failure.
 Wire before the MediaOut the item renders (Map Creator Pro: `MediaOut1_1`).
+
+Planar tracking with Mocha Pro OFX (Resolve 21.2, Mocha Pro 2026.5): add a comp, add the
+node, track in the Mocha UI, then read the four corners over the tracked range:
+
+```bash
+davinci --json fusion add-comp V1@0 --allow-v1
+davinci --json fusion add-tool V1@0 ofx.com.borisfx.ofx.mochaPro --name MochaPro1 --before MediaOut1 --allow-v1
+davinci --json fusion read V1@0 --tool MochaPro1 --input surfacetopleft_trackinggroup \
+  --input surfacetopright_trackinggroup --input surfacebottomleft_trackinggroup \
+  --input surfacebottomright_trackinggroup --frames 0:299 --out corners.json
+```
+
+The corner inputs are filled when Create Track Data is pressed in the node for the chosen
+layer (`trackingchooselayer_trackinggroup`). Frames are comp frames; the result's
+`comp_range` maps them to the clip.
 
 Build check workflow (Resolve 21.2):
 

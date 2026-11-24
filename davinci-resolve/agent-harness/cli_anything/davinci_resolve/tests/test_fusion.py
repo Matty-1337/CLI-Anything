@@ -621,3 +621,121 @@ def test_place_removes_a_carrier_that_lands_on_the_wrong_track(carrier, comp_fil
     with pytest.raises(fx.FusionError, match="landed on video track 1, not V3 .*removed again: True"):
         fx.place(project, tl, comp_file, track=3, record_frame=108000, frames=30, carrier=carrier)
     assert tl.tracks[1] == [] and len(tl.deleted) == 1
+
+
+# ---------------------------------------------------------------- read inputs over frames, add a comp
+
+class AnimTool(FakeTool):
+    """A tracker-like tool whose Point inputs change per frame, as Mocha Pro's corner outputs do."""
+
+    def __init__(self, name="MochaPro1", reg="ofx.com.borisfx.ofx.mochaPro"):
+        super().__init__(name, reg)
+        self.calls = []
+
+    def GetInput(self, ident, time=None):
+        self.calls.append((ident, time))
+        if ident == "surfacetopleft_trackinggroup":
+            return {1: 0.1 + 0.001 * time, 2: 0.2, 3: 0.0}
+        if ident == "trackingchooselayer_trackinggroup":
+            return "VOI_PLANE"
+        return None
+
+    def GetInputList(self):
+        return {1: FakeInput("surfacetopleft_trackinggroup", "Top Left"),
+                2: FakeInput("trackingchooselayer_trackinggroup", "Layer")}
+
+    def SetInput(self, ident, value):  # read must never write
+        raise AssertionError("fusion read wrote an input")
+
+
+def _anim_comp():
+    comp = FakeComp(tools=())
+    comp.tools["MochaPro1"] = AnimTool()
+    return comp
+
+
+def test_parse_frames_ranges():
+    assert fx.parse_frames("3") == [3]
+    assert fx.parse_frames("0:4") == [0, 1, 2, 3, 4]
+    assert fx.parse_frames("0:10:5") == [0, 5, 10]
+    for bad in ("", "4:2", "a:b", "0:4:0", "1:2:3:4", "-1:3"):
+        with pytest.raises(ValueError):
+            fx.parse_frames(bad)
+
+
+def test_read_inputs_reads_every_frame_and_never_writes():
+    comp = _anim_comp()
+    got = fx.read_inputs(comp, "MochaPro1", ["surfacetopleft_trackinggroup"], [0, 1, 2])
+    assert [r["frame"] for r in got["frames"]] == [0, 1, 2]
+    assert got["frames"][2]["values"]["surfacetopleft_trackinggroup"] == {"1": pytest.approx(0.102), "2": 0.2, "3": 0.0}
+    assert comp.tools["MochaPro1"].calls == [("surfacetopleft_trackinggroup", f) for f in (0, 1, 2)]
+    assert got["comp_range"] == [0.0, 1799.0]
+
+
+def test_read_inputs_refuses_unknown_tool_or_input():
+    comp = _anim_comp()
+    with pytest.raises(fx.FusionError, match="No tool named"):
+        fx.read_inputs(comp, "Tracker9", ["x"], [0])
+    with pytest.raises(fx.FusionError, match="no input"):
+        fx.read_inputs(comp, "MochaPro1", ["surfaceTopLeft"], [0])
+
+
+def test_cli_read_writes_the_file_and_never_saves(fake_resolve, tmp_path, monkeypatch):
+    item = _item_with(fake_resolve, 1, _anim_comp())
+    saves = []
+    monkeypatch.setattr(cli_mod, "mutation", lambda *a, **k: saves.append(a))
+    out = tmp_path / "corners.json"
+    result = CliRunner().invoke(cli_mod.cli, ["--json", "fusion", "read", item.id, "--tool", "MochaPro1",
+                                              "--input", "surfacetopleft_trackinggroup",
+                                              "--input", "trackingchooselayer_trackinggroup",
+                                              "--frames", "0:3", "--out", str(out)])
+    assert result.exit_code == 0, result.output
+    assert saves == [], "read is not a mutation"
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data["frames"]) == 4 and data["frames"][0]["values"]["trackingchooselayer_trackinggroup"] == "VOI_PLANE"
+    assert json.loads(result.output)["frames"] == 4
+
+
+def test_cli_read_bad_input_is_a_clean_error(fake_resolve):
+    item = _item_with(fake_resolve, 2, _anim_comp())
+    result = CliRunner().invoke(cli_mod.cli, ["--json", "fusion", "read", item.id, "--tool", "MochaPro1",
+                                              "--input", "nope", "--frames", "0"])
+    assert result.exit_code == 1 and "no input" in json.loads(result.output)["error"]
+
+
+class CompItem(FakeItem):
+    def AddFusionComp(self):
+        comp = FakeComp(tools=("MediaIn1", "MediaOut1"))
+        self.comps.append(comp)
+        return comp
+
+
+def test_add_comp_reads_back_the_new_comp():
+    item = CompItem("master", 0, 300, 2)
+    got = fx.add_comp(item)
+    assert got["comps"] == {"before": 0, "after": 1, "index": 1}
+    assert {t["name"] for t in got["tools"]} == {"MediaIn1", "MediaOut1"}
+
+
+def test_add_comp_refused_by_resolve_is_an_error():
+    item = CompItem("master", 0, 300, 2)
+    item.AddFusionComp = lambda: None
+    with pytest.raises(fx.FusionError, match="did not add"):
+        fx.add_comp(item)
+
+
+def test_cli_add_comp_guards_v1_and_dry_run(fake_resolve):
+    v1 = CompItem("master", 0, 300, 1)
+    fake_resolve.current.tracks[1].append(v1)
+    refused = CliRunner().invoke(cli_mod.cli, ["--json", "fusion", "add-comp", v1.id])
+    assert refused.exit_code == 1 and "V1" in json.loads(refused.output)["error"]
+    dry = CliRunner().invoke(cli_mod.cli, ["--json", "--dry-run", "fusion", "add-comp", v1.id, "--allow-v1"])
+    assert dry.exit_code == 0 and json.loads(dry.output)["dry_run"] is True and v1.comps == []
+    done = CliRunner().invoke(cli_mod.cli, ["--json", "fusion", "add-comp", v1.id, "--allow-v1"])
+    assert done.exit_code == 0, done.output
+    assert json.loads(done.output)["result"]["comps"]["after"] == 1
+
+
+def test_help_lists_read_and_add_comp():
+    result = CliRunner().invoke(cli_mod.cli, ["fusion", "--help"])
+    assert "read" in result.output and "add-comp" in result.output

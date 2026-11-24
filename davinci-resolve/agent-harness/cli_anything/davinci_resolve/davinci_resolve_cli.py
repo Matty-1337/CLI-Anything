@@ -513,7 +513,7 @@ def timeline_marker_check(ctx, cue_sheet):
 
 @cli.group()
 def fusion():
-    """Place and edit Fusion titles without moving anything on the timeline."""
+    """Place and edit Fusion titles, add comps and tools, and read inputs, without moving anything on the timeline."""
 
 
 @fusion.command("carrier")
@@ -603,6 +603,48 @@ def fusion_inputs(ctx, item_ref, tool_name, timeline_name, comp_index):
     item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
     emit(ctx, {"item": fx.item_summary(item), "tool": tool_name,
                "inputs": fx.input_list(fx.comp_of(item, comp_index), tool_name)})
+
+
+@fusion.command("read")
+@click.argument("item_ref")
+@click.option("--tool", "tool_name", required=True, help="Tool name in the comp, e.g. MochaPro1.")
+@click.option("--input", "inputs", multiple=True, required=True, help="Input id ('fusion inputs' lists them). Repeatable.")
+@click.option("--frames", required=True, help="Comp frames: N, FIRST:LAST (inclusive) or FIRST:LAST:STEP.")
+@click.option("--out", type=click.Path(path_type=Path), help="Also write every frame's values to this JSON file.")
+@click.option("--timeline", "timeline_name")
+@click.option("--comp", "comp_index", type=int, default=1, show_default=True)
+@click.pass_context
+@command_guard
+def fusion_read(ctx, item_ref, tool_name, inputs, frames, out, timeline_name, comp_index):
+    """Read a tool's inputs at every frame of a range, e.g. a tracker's corner Points. Read only."""
+    frame_list = fx.parse_frames(frames)
+    _, current = _resolve_and_project()
+    item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
+    data = {"item": fx.item_summary(item), **fx.read_inputs(fx.comp_of(item, comp_index), tool_name, inputs, frame_list)}
+    if out:
+        target = Path(out).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        return emit(ctx, {"ok": True, "item": data["item"]["id"], "tool": tool_name, "inputs": list(inputs),
+                          "frames": len(frame_list), "out": str(target)})
+    return emit(ctx, data)
+
+
+@fusion.command("add-comp")
+@click.argument("item_ref")
+@click.option("--timeline", "timeline_name")
+@click.option("--allow-v1", is_flag=True, help="Allow adding a comp to an item on V1, the program track.")
+@click.pass_context
+@command_guard
+def fusion_add_comp(ctx, item_ref, timeline_name, allow_v1):
+    """Add a new Fusion comp (MediaIn > MediaOut) to a timeline item and read it back."""
+    _, current = _resolve_and_project()
+    item = fx.find_item(fx.find_timeline(current, timeline_name), item_ref)
+    track = item.GetTrackTypeAndIndex() if hasattr(item, "GetTrackTypeAndIndex") else None
+    if track and int(track[1]) == 1 and not allow_v1:
+        raise fx.FusionError("refusing to change an item on V1, the program track; pass --allow-v1 to override")
+    return mutation(ctx, "fusion.add_comp", {"item": item.GetUniqueId(), "comps_before": item.GetFusionCompCount()},
+                    lambda: fx.add_comp(item))
 
 
 @fusion.command("set")
